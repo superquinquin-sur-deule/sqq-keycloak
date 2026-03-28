@@ -1,0 +1,276 @@
+/* SuperQuinquin sur Deûle - Keycloak Login Theme */
+
+:root {
+    --sqq-yellow: #f1dc43;
+    --sqq-yellow-hover: #e5d030;
+    --sqq-dark: #3c312e;
+    --sqq-bg: #efefee;
+    --sqq-white: #ffffff;
+    --sqq-radius: 9999px;
+}
+
+/* Page background */
+html.login-pf,
+body.login-pf,
+.login-pf body {
+    background-color: var(--sqq-bg) !important;
+    background-image: none !important;
+}
+
+.login-pf .container-fluid,
+.login-pf #kc-container-wrapper,
+.login-pf #kc-content,
+.login-pf .pf-c-login,
+.login-pf .pf-v5-c-login,
+.login-pf .pf-c-background-image,
+.login-pf .pf-v5-c-background-image {
+    background-color: var(--sqq-bg) !important;
+    background-image: none !important;
+}
+
+.pf-c-background-image::before,
+.pf-v5-c-background-image::before,
+.pf-c-background-image::after,
+.pf-v5-c-background-image::after {
+    display: none !important;
+}
+
+/* Wave decoration at the top */
+body.login-pf::before {
+    content: "";
+    display: block;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 200px;
+    background-image: url("../img/vague.svg");
+    background-size: cover;
+    background-position: top center;
+    background-repeat: no-repeat;
+    z-index: 0;
+    transform: rotate(180deg);
+    opacity: 0.5;
+}
+
+/* Login card container */
+#kc-login {
+    position: relative;
+    z-index: 1;
+}
+
+.login-pf .card-pf,
+#kc-login,
+.kc-login-container {
+    position: relative;
+    z-index: 1;
+}
+
+/* Header - hide default header text */
+#kc-header-wrapper {
+    font-size: 0;
+    padding: 0;
+    margin: 0;
+}
+
+#kc-header {
+    padding: 0;
+    margin: 0;
+}
+
+/* Hide default logo element */
+#kc-logo {
+    display: none;
+}
+
+div#kc-header-wrapper::after {
+    display: none;
+}
+
+/* Login card */
+#kc-form-login,
+.card-pf,
+#kc-content-wrapper {
+    border-radius: 16px !important;
+}
+
+.card-pf {
+    background: var(--sqq-white) !important;
+    border: none !important;
+    box-shadow: 0 4px 24px rgba(60, 49, 46, 0.10) !important;
+    border-radius: 16px !important;
+    padding: 2rem !important;
+    padding-top: 10rem !important;
+    max-width: 440px;
+    margin: 2rem auto !important;
+    position: relative;
+}
+
+/* Logo inside the card */
+.card-pf::before {
+    content: "";
+    display: block;
+    position: absolute;
+    top: 1.5rem;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 280px;
+    height: 120px;
+    background-image: url("../img/logo.svg");
+    background-repeat: no-repeat;
+    background-position: center;
+    background-size: contain;
+}
+
+/* Form labels */
+.login-pf .control-label,
+.login-pf label {
+    color: var(--sqq-dark) !important;
+    font-family: Arial, Helvetica, sans-serif;
+    font-weight: 600;
+    font-size: 0.9rem;
+}
+
+/* Form inputs */
+.login-pf input[type="text"],
+.login-pf input[type="password"],
+.login-pf input[type="email"],
+.login-pf .pf-c-form-control,
+.login-pf .pf-v5-c-form-control {
+    border: 2px solid #ddd !important;
+    border-radius: 8px !important;
+    padding: 0.6rem 0.8rem !important;
+    font-size: 1rem !important;
+    transition: border-color 0.2s ease;
+    background: var(--sqq-white) !important;
+}
+
+.login-pf input[type="text"]:focus,
+.login-pf input[type="password"]:focus,
+.login-pf input[type="email"]:focus,
+.login-pf .pf-c-form-control:focus,
+.login-pf .pf-v5-c-form-control:focus {
+    border-color: var(--sqq-yellow) !important;
+    box-shadow: 0 0 0 3px rgba(241, 220, 67, 0.3) !important;
+    outline: none !important;
+}
+
+/* Primary button (login) */
+.login-pf .btn-primary,
+.login-pf .pf-c-button.pf-m-primary,
+.login-pf .pf-v5-c-button.pf-m-primary,
+#kc-login {
+    background-color: var(--sqq-yellow) !important;
+    border-color: var(--sqq-yellow) !important;
+    color: var(--sqq-dark) !important;
+    border-radius: var(--sqq-radius) !important;
+    font-weight: 700 !important;
+    font-size: 1rem !important;
+    padding: 0.65rem 2rem !important;
+    text-transform: none;
+    transition: background-color 0.2s ease, transform 0.1s ease;
+    box-shadow: none !important;
+}
+
+.login-pf .btn-primary:hover,
+.login-pf .pf-c-button.pf-m-primary:hover,
+.login-pf .pf-v5-c-button.pf-m-primary:hover {
+    background-color: var(--sqq-yellow-hover) !important;
+    border-color: var(--sqq-yellow-hover) !important;
+    color: var(--sqq-dark) !important;
+    transform: translateY(-1px);
+}
+
+.login-pf .btn-primary:active,
+.login-pf .pf-c-button.pf-m-primary:active,
+.login-pf .pf-v5-c-button.pf-m-primary:active {
+    transform: translateY(0);
+}
+
+/* Secondary/link buttons */
+.login-pf .btn-default,
+.login-pf .pf-c-button.pf-m-secondary,
+.login-pf .pf-v5-c-button.pf-m-secondary {
+    border-radius: var(--sqq-radius) !important;
+    border-color: var(--sqq-dark) !important;
+    color: var(--sqq-dark) !important;
+}
+
+/* Links */
+.login-pf a,
+.login-pf .pf-c-button.pf-m-link,
+.login-pf .pf-v5-c-button.pf-m-link {
+    color: var(--sqq-dark) !important;
+    font-weight: 600;
+}
+
+.login-pf a:hover,
+.login-pf .pf-c-button.pf-m-link:hover,
+.login-pf .pf-v5-c-button.pf-m-link:hover {
+    color: var(--sqq-yellow-hover) !important;
+    text-decoration: underline;
+}
+
+/* Social provider buttons */
+#kc-social-providers .pf-c-button,
+#kc-social-providers .pf-v5-c-button,
+#social-providers a {
+    border-radius: var(--sqq-radius) !important;
+    border: 2px solid #ddd !important;
+    color: var(--sqq-dark) !important;
+    background: var(--sqq-white) !important;
+    margin-bottom: 0.5rem;
+    transition: border-color 0.2s ease;
+}
+
+#kc-social-providers .pf-c-button:hover,
+#kc-social-providers .pf-v5-c-button:hover,
+#social-providers a:hover {
+    border-color: var(--sqq-yellow) !important;
+    background: rgba(241, 220, 67, 0.08) !important;
+}
+
+/* Alert messages */
+.login-pf .alert-error,
+.login-pf .pf-c-alert.pf-m-danger,
+.login-pf .pf-v5-c-alert.pf-m-danger {
+    border-radius: 8px !important;
+    border-left: 4px solid #c9190b !important;
+}
+
+.login-pf .alert-success,
+.login-pf .pf-c-alert.pf-m-success,
+.login-pf .pf-v5-c-alert.pf-m-success {
+    border-radius: 8px !important;
+    border-left: 4px solid var(--sqq-yellow) !important;
+}
+
+/* Checkbox / remember me */
+.login-pf .pf-c-check__label,
+.login-pf .pf-v5-c-check__label,
+.login-pf .checkbox label {
+    color: var(--sqq-dark) !important;
+    font-size: 0.85rem;
+}
+
+/* Footer */
+#kc-info-wrapper {
+    text-align: center;
+    font-size: 0.85rem;
+}
+
+/* Responsive adjustments */
+@media (max-width: 600px) {
+    .card-pf {
+        margin: 0.5rem !important;
+        padding: 1.5rem !important;
+        padding-top: 8rem !important;
+        border-radius: 12px !important;
+    }
+
+    .card-pf::before {
+        width: 200px;
+        height: 85px;
+        top: 1rem;
+    }
+}
