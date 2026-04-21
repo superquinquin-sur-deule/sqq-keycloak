@@ -1,5 +1,5 @@
 target/
-.idea/
+.idea
 *.iml
 .claude/settings.local.json
 dependency-reduced-pom.xml

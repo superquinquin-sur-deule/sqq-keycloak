@@ -1,8 +1,14 @@
 package com.sqq.keycloak.odoo;
 
+import java.security.SecureRandom;
+import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
+
+import javax.crypto.Cipher;
+import javax.crypto.spec.GCMParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
 
 import org.keycloak.component.ComponentModel;
 import org.keycloak.credential.CredentialInput;
@@ -22,19 +28,27 @@ public class OdooUserStorageProvider implements UserStorageProvider, UserLookupP
 
     private static final Logger logger = Logger.getLogger(OdooUserStorageProvider.class);
 
+    private static final int GCM_IV_LENGTH = 12;
+    private static final int GCM_TAG_LENGTH = 128;
+
     private final KeycloakSession session;
     private final ComponentModel model;
     private final OdooJsonRpcClient odooClient;
     private final int adminUid;
     private final String adminPassword;
+    private final boolean storePassword;
+    private final String encryptionKey;
 
     public OdooUserStorageProvider(KeycloakSession session, ComponentModel model,
-                                   OdooJsonRpcClient odooClient, int adminUid, String adminPassword) {
+                                   OdooJsonRpcClient odooClient, int adminUid, String adminPassword,
+                                   boolean storePassword, String encryptionKey) {
         this.session = session;
         this.model = model;
         this.odooClient = odooClient;
         this.adminUid = adminUid;
         this.adminPassword = adminPassword;
+        this.storePassword = storePassword;
+        this.encryptionKey = encryptionKey;
     }
 
     // --- CredentialInputValidator ---
@@ -68,6 +82,19 @@ public class OdooUserStorageProvider implements UserStorageProvider, UserLookupP
         OdooUserInfo info = odooClient.fetchUser(uid, password);
         if (info != null) {
             updateUserAttributes(user, info);
+        }
+
+        // Store encrypted password as a user session note for token mapping
+        if (storePassword) {
+            try {
+                String encryptedPassword = encrypt(password, encryptionKey);
+                var authSession = session.getContext().getAuthenticationSession();
+                if (authSession != null) {
+                    authSession.setUserSessionNote("odoo_password", encryptedPassword);
+                }
+            } catch (Exception e) {
+                logger.errorf(e, "Failed to encrypt Odoo password for user: %s", username);
+            }
         }
 
         logger.debugf("Odoo authentication succeeded for user: %s (uid=%d)", username, uid);
@@ -144,6 +171,24 @@ public class OdooUserStorageProvider implements UserStorageProvider, UserLookupP
     }
 
     // --- Internal helpers ---
+
+    private static String encrypt(String plaintext, String base64Key) throws Exception {
+        byte[] keyBytes = Base64.getDecoder().decode(base64Key);
+        SecretKeySpec secretKey = new SecretKeySpec(keyBytes, "AES");
+
+        byte[] iv = new byte[GCM_IV_LENGTH];
+        new SecureRandom().nextBytes(iv);
+
+        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+        cipher.init(Cipher.ENCRYPT_MODE, secretKey, new GCMParameterSpec(GCM_TAG_LENGTH, iv));
+        byte[] ciphertext = cipher.doFinal(plaintext.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+
+        byte[] output = new byte[iv.length + ciphertext.length];
+        System.arraycopy(iv, 0, output, 0, iv.length);
+        System.arraycopy(ciphertext, 0, output, iv.length, ciphertext.length);
+
+        return Base64.getEncoder().encodeToString(output);
+    }
 
     private UserModel importUser(RealmModel realm, OdooUserInfo info) {
         logger.infof("Importing Odoo user: %s (uid=%d)", info.getLogin(), info.getUid());

@@ -21,6 +21,8 @@ public class OdooUserStorageProviderFactory implements UserStorageProviderFactor
     public static final String CONFIG_ODOO_DATABASE = "odoo-database";
     public static final String CONFIG_ADMIN_LOGIN = "admin-login";
     public static final String CONFIG_ADMIN_PASSWORD = "admin-password";
+    public static final String CONFIG_STORE_PASSWORD = "store-password";
+    public static final String CONFIG_ENCRYPTION_KEY = "encryption-key";
 
     private static final List<ProviderConfigProperty> CONFIG_PROPERTIES;
 
@@ -51,6 +53,20 @@ public class OdooUserStorageProviderFactory implements UserStorageProviderFactor
                     .helpText("Odoo service account password (optional)")
                     .secret(true)
                     .add()
+                .property()
+                    .name(CONFIG_STORE_PASSWORD)
+                    .type(ProviderConfigProperty.BOOLEAN_TYPE)
+                    .label("Store Encrypted Password in Token")
+                    .helpText("If enabled, the user's Odoo password is encrypted and stored as a session note for inclusion in tokens")
+                    .defaultValue("false")
+                    .add()
+                .property()
+                    .name(CONFIG_ENCRYPTION_KEY)
+                    .type(ProviderConfigProperty.PASSWORD)
+                    .label("Encryption Key")
+                    .helpText("AES-256 key (32 bytes, Base64-encoded) — required when 'Store Encrypted Password in Token' is enabled")
+                    .secret(true)
+                    .add()
                 .build();
     }
 
@@ -65,6 +81,8 @@ public class OdooUserStorageProviderFactory implements UserStorageProviderFactor
         String odooDatabase = model.get(CONFIG_ODOO_DATABASE);
         String adminLogin = model.get(CONFIG_ADMIN_LOGIN);
         String adminPassword = model.get(CONFIG_ADMIN_PASSWORD);
+        boolean storePassword = Boolean.parseBoolean(model.get(CONFIG_STORE_PASSWORD));
+        String encryptionKey = model.get(CONFIG_ENCRYPTION_KEY);
 
         OdooJsonRpcClient client = new OdooJsonRpcClient(odooUrl, odooDatabase);
 
@@ -77,7 +95,8 @@ public class OdooUserStorageProviderFactory implements UserStorageProviderFactor
             }
         }
 
-        return new OdooUserStorageProvider(session, model, client, adminUid, adminPassword);
+        return new OdooUserStorageProvider(session, model, client, adminUid, adminPassword,
+                storePassword, encryptionKey);
     }
 
     @Override
@@ -95,6 +114,13 @@ public class OdooUserStorageProviderFactory implements UserStorageProviderFactor
         String odooDatabase = config.get(CONFIG_ODOO_DATABASE);
         if (odooDatabase == null || odooDatabase.isBlank()) {
             throw new ComponentValidationException("Odoo database name is required");
+        }
+        boolean storePassword = Boolean.parseBoolean(config.get(CONFIG_STORE_PASSWORD));
+        if (storePassword) {
+            String encryptionKey = config.get(CONFIG_ENCRYPTION_KEY);
+            if (encryptionKey == null || encryptionKey.isBlank()) {
+                throw new ComponentValidationException("Encryption key is required when password storage is enabled");
+            }
         }
     }
 }
