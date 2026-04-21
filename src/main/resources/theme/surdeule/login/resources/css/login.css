@@ -18,13 +18,18 @@ body.login-pf,
 }
 
 .login-pf .container-fluid,
-.login-pf #kc-container-wrapper,
-.login-pf #kc-content,
 .login-pf .pf-c-login,
 .login-pf .pf-v5-c-login,
 .login-pf .pf-c-background-image,
 .login-pf .pf-v5-c-background-image {
     background-color: var(--sqq-bg) !important;
+    background-image: none !important;
+}
+
+.login-pf #kc-container-wrapper,
+.login-pf #kc-content,
+.login-pf #kc-content-wrapper {
+    background-color: transparent !important;
     background-image: none !important;
 }
 
@@ -131,28 +136,124 @@ div#kc-header-wrapper::after {
     font-size: 0.9rem;
 }
 
+/* Remove PatternFly form-control grey wrapper/underline */
+.login-pf .pf-c-form-control,
+.login-pf .pf-v5-c-form-control {
+    background: var(--sqq-white) !important;
+    background-image: none !important;
+    box-shadow: none !important;
+}
+
+.login-pf .pf-c-form-control::before,
+.login-pf .pf-v5-c-form-control::before,
+.login-pf .pf-c-form-control::after,
+.login-pf .pf-v5-c-form-control::after {
+    display: none !important;
+    border: none !important;
+}
+
+/* Transparent form groups (kill PatternFly v3 grey wrapper) */
+.login-pf .pf-c-form__group,
+.login-pf .pf-v5-c-form__group,
+.login-pf .form-group,
+.login-pf div.form-group,
+.login-pf #kc-form-wrapper,
+.login-pf #kc-form-login,
+.login-pf #kc-form,
+.login-pf .login-pf-page-main,
+.login-pf .login-pf-signup {
+    background: transparent !important;
+    background-color: transparent !important;
+    background-image: none !important;
+    box-shadow: none !important;
+    border: none !important;
+}
+
 /* Form inputs */
 .login-pf input[type="text"],
 .login-pf input[type="password"],
 .login-pf input[type="email"],
+.login-pf .pf-c-form-control > input,
+.login-pf .pf-v5-c-form-control > input,
 .login-pf .pf-c-form-control,
 .login-pf .pf-v5-c-form-control {
-    border: 2px solid #ddd !important;
-    border-radius: 8px !important;
-    padding: 0.6rem 0.8rem !important;
+    border: 1px solid #e5e5e3 !important;
+    border-radius: 10px !important;
+    padding: 0.7rem 0.9rem !important;
     font-size: 1rem !important;
-    transition: border-color 0.2s ease;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
     background: var(--sqq-white) !important;
+    box-shadow: none !important;
 }
 
 .login-pf input[type="text"]:focus,
 .login-pf input[type="password"]:focus,
 .login-pf input[type="email"]:focus,
 .login-pf .pf-c-form-control:focus,
-.login-pf .pf-v5-c-form-control:focus {
+.login-pf .pf-v5-c-form-control:focus,
+.login-pf .pf-c-form-control:focus-within,
+.login-pf .pf-v5-c-form-control:focus-within {
     border-color: var(--sqq-yellow) !important;
     box-shadow: 0 0 0 3px rgba(241, 220, 67, 0.3) !important;
     outline: none !important;
+}
+
+/* Input group (password + reveal toggle): icon overlaid inside the input */
+.login-pf .pf-c-input-group,
+.login-pf .pf-v5-c-input-group {
+    background: transparent !important;
+    border: none !important;
+    position: relative !important;
+    display: block !important;
+}
+
+.login-pf .pf-c-input-group > .pf-c-form-control,
+.login-pf .pf-v5-c-input-group > .pf-v5-c-form-control {
+    background: var(--sqq-white) !important;
+    width: 100% !important;
+    padding-right: 2.8rem !important;
+}
+
+.login-pf .pf-c-input-group > .pf-c-button,
+.login-pf .pf-v5-c-input-group > .pf-v5-c-button {
+    position: absolute !important;
+    top: 50% !important;
+    right: 0.25rem !important;
+    transform: translateY(-50%) !important;
+    background: transparent !important;
+    border: none !important;
+    border-radius: 9999px !important;
+    color: var(--sqq-dark) !important;
+    padding: 0.35rem 0.55rem !important;
+    margin: 0 !important;
+    box-shadow: none !important;
+    opacity: 0.65;
+    transition: opacity 0.15s ease, background-color 0.15s ease;
+    z-index: 2;
+}
+
+.login-pf .pf-c-input-group > .pf-c-button:hover,
+.login-pf .pf-v5-c-input-group > .pf-v5-c-button:hover {
+    background: rgba(60, 49, 46, 0.06) !important;
+    color: var(--sqq-dark) !important;
+    opacity: 1;
+}
+
+.login-pf .pf-c-input-group > .pf-c-button:focus-visible,
+.login-pf .pf-v5-c-input-group > .pf-v5-c-button:focus-visible {
+    outline: 2px solid var(--sqq-yellow) !important;
+    outline-offset: 2px;
+    opacity: 1;
+}
+
+/* Kill PatternFly pf-m-control ::after border box */
+.login-pf .pf-c-input-group > .pf-c-button::after,
+.login-pf .pf-c-input-group > .pf-c-button::before,
+.login-pf .pf-v5-c-input-group > .pf-v5-c-button::after,
+.login-pf .pf-v5-c-input-group > .pf-v5-c-button::before {
+    display: none !important;
+    border: none !important;
+    content: none !important;
 }
 
 /* Primary button (login) */
