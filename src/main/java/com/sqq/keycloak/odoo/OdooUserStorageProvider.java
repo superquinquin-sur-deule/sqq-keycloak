@@ -2,7 +2,6 @@ package com.sqq.keycloak.odoo;
 
 import java.security.SecureRandom;
 import java.util.Base64;
-import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
 
@@ -28,6 +27,10 @@ public class OdooUserStorageProvider implements UserStorageProvider, UserLookupP
 
     private static final Logger logger = Logger.getLogger(OdooUserStorageProvider.class);
 
+    static final String ATTR_ODOO_UID = "odoo_uid";
+    static final String ATTR_ODOO_PARTNER_ID = "odoo_partner_id";
+    static final String ATTR_ODOO_IS_MEMBER = "odoo_is_member";
+
     private static final int GCM_IV_LENGTH = 12;
     private static final int GCM_TAG_LENGTH = 128;
 
@@ -51,8 +54,6 @@ public class OdooUserStorageProvider implements UserStorageProvider, UserLookupP
         this.encryptionKey = encryptionKey;
     }
 
-    // --- CredentialInputValidator ---
-
     @Override
     public boolean supportsCredentialType(String credentialType) {
         return PasswordCredentialModel.TYPE.equals(credentialType);
@@ -66,31 +67,39 @@ public class OdooUserStorageProvider implements UserStorageProvider, UserLookupP
     @Override
     public boolean isValid(RealmModel realm, UserModel user, CredentialInput input) {
         if (!supportsCredentialType(input.getType())) {
+            logger.debugf("isValid: unsupported credential type %s for user %s", input.getType(), user.getUsername());
             return false;
         }
 
         String username = user.getUsername();
+        String email = user.getEmail();
         String password = input.getChallengeResponse();
 
-        int uid = odooClient.authenticate(username, password);
-        if (uid <= 0) {
-            logger.debugf("Odoo authentication failed for user: %s", username);
+        if (email == null || email.isBlank()) {
+            logger.warnf("Cannot authenticate user %s: no email stored", username);
+            return false;
+        }
+        if (password == null || password.isEmpty()) {
+            logger.warnf("Cannot authenticate user %s: empty password submitted", username);
             return false;
         }
 
-        // Refresh user attributes from Odoo on each successful login
-        OdooUserInfo info = odooClient.fetchUser(uid, password);
-        if (info != null) {
-            updateUserAttributes(user, info);
+        logger.debugf("Delegating credential validation to Odoo for user=%s email=%s", username, email);
+        int uid = odooClient.authenticate(email, password);
+        if (uid <= 0) {
+            logger.debugf("Odoo authentication failed for user: %s (email=%s)", username, email);
+            return false;
         }
 
-        // Store encrypted password as a user session note for token mapping
         if (storePassword) {
             try {
                 String encryptedPassword = encrypt(password, encryptionKey);
                 var authSession = session.getContext().getAuthenticationSession();
                 if (authSession != null) {
                     authSession.setUserSessionNote("odoo_password", encryptedPassword);
+                    logger.debugf("Stored encrypted Odoo password as session note for user=%s", username);
+                } else {
+                    logger.warnf("No authentication session available to store Odoo password note for user=%s", username);
                 }
             } catch (Exception e) {
                 logger.errorf(e, "Failed to encrypt Odoo password for user: %s", username);
@@ -101,47 +110,31 @@ public class OdooUserStorageProvider implements UserStorageProvider, UserLookupP
         return true;
     }
 
-    // --- UserLookupProvider ---
-
     @Override
     public UserModel getUserByUsername(RealmModel realm, String username) {
-        // Keycloak already checked local storage before calling us.
-        // Only search Odoo if admin credentials are configured.
-        if (adminUid > 0) {
-            OdooUserInfo info = odooClient.searchUserByLogin(username, adminUid, adminPassword);
-            if (info != null) {
-                return importUser(realm, info);
-            }
+        if (adminUid <= 0) {
+            return null;
         }
-
-        return null;
+        OdooUserInfo info = odooClient.searchPartnerByBarcode(username, adminUid, adminPassword);
+        return info == null ? null : importOrUpdate(realm, info);
     }
 
     @Override
     public UserModel getUserByEmail(RealmModel realm, String email) {
-        // Keycloak already checked local storage before calling us.
-        if (adminUid > 0) {
-            OdooUserInfo info = odooClient.searchUserByEmail(email, adminUid, adminPassword);
-            if (info != null) {
-                return importUser(realm, info);
-            }
+        if (adminUid <= 0) {
+            return null;
         }
-
-        return null;
+        OdooUserInfo info = odooClient.searchPartnerByEmail(email, adminUid, adminPassword);
+        return info == null ? null : importOrUpdate(realm, info);
     }
 
     @Override
     public UserModel getUserById(RealmModel realm, String id) {
-        // Federated users are looked up by their storage ID;
-        // once imported, Keycloak handles them via local storage.
         return null;
     }
 
-    // --- UserQueryProvider ---
-
     @Override
     public Stream<UserModel> searchForUserStream(RealmModel realm, Map<String, String> params, Integer firstResult, Integer maxResults) {
-        // User search is handled through local storage after import
         return Stream.empty();
     }
 
@@ -155,22 +148,14 @@ public class OdooUserStorageProvider implements UserStorageProvider, UserLookupP
         return Stream.empty();
     }
 
-    // --- UserCountMethodsProvider ---
-
     @Override
     public int getUsersCount(RealmModel realm) {
-        // We don't know the remote user count; return 0 so Keycloak doesn't crash
         return 0;
     }
 
-    // --- UserStorageProvider ---
-
     @Override
     public void close() {
-        // no-op
     }
-
-    // --- Internal helpers ---
 
     private static String encrypt(String plaintext, String base64Key) throws Exception {
         byte[] keyBytes = Base64.getDecoder().decode(base64Key);
@@ -190,25 +175,43 @@ public class OdooUserStorageProvider implements UserStorageProvider, UserLookupP
         return Base64.getEncoder().encodeToString(output);
     }
 
-    private UserModel importUser(RealmModel realm, OdooUserInfo info) {
-        logger.infof("Importing Odoo user: %s (uid=%d)", info.getLogin(), info.getUid());
-
-        UserModel user = session.users().addUser(realm, info.getLogin());
-        user.setFederationLink(model.getId());
-        user.setEnabled(true);
-
-        updateUserAttributes(user, info);
-
+    
+    private UserModel importOrUpdate(RealmModel realm, OdooUserInfo info) {
+        if (info.getBarcodeBase() == null || info.getBarcodeBase().isBlank()) {
+            logger.warnf("Skipping Odoo partner %d: missing barcode_base (email=%s)", info.getPartnerId(), info.getEmail());
+            return null;
+        }
+        UserModel user = findByPartnerId(session, realm, model, info.getPartnerId());
+        if (user == null) {
+            logger.infof("Importing Odoo partner %d as user '%s'", info.getPartnerId(), info.getBarcodeBase());
+            user = session.users().addUser(realm, info.getBarcodeBase());
+            user.setFederationLink(model.getId());
+        } else if (!info.getBarcodeBase().equals(user.getUsername())) {
+            logger.infof("Renaming federated user (partnerId=%d): '%s' -> '%s'",
+                    info.getPartnerId(), user.getUsername(), info.getBarcodeBase());
+            user.setUsername(info.getBarcodeBase());
+        } else {
+            logger.debugf("Updating federated user (partnerId=%d, username=%s)", info.getPartnerId(), user.getUsername());
+        }
+        applyAttributes(user, info);
         return user;
     }
 
-    private void updateUserAttributes(UserModel user, OdooUserInfo info) {
+    static UserModel findByPartnerId(KeycloakSession session, RealmModel realm, ComponentModel model, int partnerId) {
+        return session.users()
+                .searchForUserByUserAttributeStream(realm, ATTR_ODOO_PARTNER_ID, String.valueOf(partnerId))
+                .filter(u -> model.getId().equals(u.getFederationLink()))
+                .findFirst()
+                .orElse(null);
+    }
+
+    static void applyAttributes(UserModel user, OdooUserInfo info) {
+        user.setEnabled(info.isMember());
         if (info.getEmail() != null) {
             user.setEmail(info.getEmail());
             user.setEmailVerified(true);
         }
         if (info.getName() != null) {
-            // Handle "LASTNAME, Firstname" format
             String name = info.getName().strip();
             if (name.contains(",")) {
                 String[] parts = name.split(",", 2);
@@ -222,6 +225,8 @@ public class OdooUserStorageProvider implements UserStorageProvider, UserLookupP
                 }
             }
         }
-        user.setSingleAttribute("odoo_uid", String.valueOf(info.getUid()));
+        user.setSingleAttribute(ATTR_ODOO_UID, String.valueOf(info.getUid()));
+        user.setSingleAttribute(ATTR_ODOO_PARTNER_ID, String.valueOf(info.getPartnerId()));
+        user.setSingleAttribute(ATTR_ODOO_IS_MEMBER, String.valueOf(info.isMember()));
     }
 }

@@ -1,17 +1,29 @@
 package com.sqq.keycloak.odoo;
 
+import java.util.Date;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.keycloak.component.ComponentModel;
 import org.keycloak.component.ComponentValidationException;
 import org.keycloak.models.KeycloakSession;
+import org.keycloak.models.KeycloakSessionFactory;
 import org.keycloak.models.RealmModel;
+import org.keycloak.models.UserModel;
+import org.keycloak.models.utils.KeycloakModelUtils;
 import org.keycloak.provider.ProviderConfigProperty;
 import org.keycloak.provider.ProviderConfigurationBuilder;
 import org.keycloak.storage.UserStorageProviderFactory;
+import org.keycloak.storage.UserStorageProviderModel;
+import org.keycloak.storage.user.ImportSynchronization;
+import org.keycloak.storage.user.SynchronizationResult;
 import org.jboss.logging.Logger;
 
-public class OdooUserStorageProviderFactory implements UserStorageProviderFactory<OdooUserStorageProvider> {
+public class OdooUserStorageProviderFactory
+        implements UserStorageProviderFactory<OdooUserStorageProvider>, ImportSynchronization {
 
     private static final Logger logger = Logger.getLogger(OdooUserStorageProviderFactory.class);
 
@@ -23,6 +35,10 @@ public class OdooUserStorageProviderFactory implements UserStorageProviderFactor
     public static final String CONFIG_ADMIN_PASSWORD = "admin-password";
     public static final String CONFIG_STORE_PASSWORD = "store-password";
     public static final String CONFIG_ENCRYPTION_KEY = "encryption-key";
+
+    private static final int SYNC_BATCH_SIZE = 100;
+
+    private static final ConcurrentHashMap<String, Integer> ADMIN_UID_CACHE = new ConcurrentHashMap<>();
 
     private static final List<ProviderConfigProperty> CONFIG_PROPERTIES;
 
@@ -44,13 +60,13 @@ public class OdooUserStorageProviderFactory implements UserStorageProviderFactor
                     .name(CONFIG_ADMIN_LOGIN)
                     .type(ProviderConfigProperty.STRING_TYPE)
                     .label("Admin Login")
-                    .helpText("Odoo service account login for user lookup (optional, enables user search)")
+                    .helpText("Odoo service account login for user lookup and sync")
                     .add()
                 .property()
                     .name(CONFIG_ADMIN_PASSWORD)
                     .type(ProviderConfigProperty.PASSWORD)
                     .label("Admin Password")
-                    .helpText("Odoo service account password (optional)")
+                    .helpText("Odoo service account password")
                     .secret(true)
                     .add()
                 .property()
@@ -84,24 +100,51 @@ public class OdooUserStorageProviderFactory implements UserStorageProviderFactor
         boolean storePassword = Boolean.parseBoolean(model.get(CONFIG_STORE_PASSWORD));
         String encryptionKey = model.get(CONFIG_ENCRYPTION_KEY);
 
+        logger.debugf("Creating OdooUserStorageProvider: url=%s db=%s adminLogin=%s storePassword=%s",
+                odooUrl, odooDatabase, adminLogin, storePassword);
+
         OdooJsonRpcClient client = new OdooJsonRpcClient(odooUrl, odooDatabase);
 
-        int adminUid = -1;
-        if (adminLogin != null && !adminLogin.isBlank()
-                && adminPassword != null && !adminPassword.isBlank()) {
-            adminUid = client.authenticate(adminLogin, adminPassword);
-            if (adminUid <= 0) {
-                logger.warn("Odoo admin authentication failed — user search will be unavailable");
-            }
-        }
+        int adminUid = resolveAdminUid(model, client, adminLogin, adminPassword);
 
         return new OdooUserStorageProvider(session, model, client, adminUid, adminPassword,
                 storePassword, encryptionKey);
     }
 
+    private static int resolveAdminUid(ComponentModel model, OdooJsonRpcClient client,
+                                       String adminLogin, String adminPassword) {
+        if (adminLogin == null || adminLogin.isBlank()
+                || adminPassword == null || adminPassword.isBlank()) {
+            logger.warn("Odoo admin credentials not configured — user search will be unavailable");
+            return -1;
+        }
+        Integer cached = ADMIN_UID_CACHE.get(model.getId());
+        if (cached != null) {
+            return cached;
+        }
+        int uid = client.authenticate(adminLogin, adminPassword);
+        if (uid <= 0) {
+            logger.warnf("Odoo admin authentication failed (login=%s)", adminLogin);
+            return -1;
+        }
+        ADMIN_UID_CACHE.putIfAbsent(model.getId(), uid);
+        logger.debugf("Odoo admin authenticated: login=%s uid=%d", adminLogin, uid);
+        return uid;
+    }
+
     @Override
     public List<ProviderConfigProperty> getConfigProperties() {
         return CONFIG_PROPERTIES;
+    }
+
+    @Override
+    public void onUpdate(KeycloakSession session, RealmModel realm, ComponentModel oldModel, ComponentModel newModel) {
+        ADMIN_UID_CACHE.remove(newModel.getId());
+    }
+
+    @Override
+    public void preRemove(KeycloakSession session, RealmModel realm, ComponentModel model) {
+        ADMIN_UID_CACHE.remove(model.getId());
     }
 
     @Override
@@ -121,6 +164,125 @@ public class OdooUserStorageProviderFactory implements UserStorageProviderFactor
             if (encryptionKey == null || encryptionKey.isBlank()) {
                 throw new ComponentValidationException("Encryption key is required when password storage is enabled");
             }
+        }
+    }
+
+    @Override
+    public SynchronizationResult sync(KeycloakSessionFactory sessionFactory, String realmId,
+                                       UserStorageProviderModel model) {
+        logger.infof("Odoo sync starting: realmId=%s componentId=%s", realmId, model.getId());
+        long syncStart = System.currentTimeMillis();
+        SynchronizationResult result = new SynchronizationResult();
+
+        String odooUrl = model.get(CONFIG_ODOO_URL);
+        String odooDatabase = model.get(CONFIG_ODOO_DATABASE);
+        String adminLogin = model.get(CONFIG_ADMIN_LOGIN);
+        String adminPassword = model.get(CONFIG_ADMIN_PASSWORD);
+
+        OdooJsonRpcClient client = new OdooJsonRpcClient(odooUrl, odooDatabase);
+        int adminUid = resolveAdminUid(model, client, adminLogin, adminPassword);
+        if (adminUid <= 0) {
+            logger.error("Odoo sync aborted: admin not authenticated");
+            return result;
+        }
+
+        Set<Integer> seenPartnerIds = new HashSet<>();
+        int offset = 0;
+
+        while (true) {
+            List<OdooUserInfo> batch = client.listMemberPartners(offset, SYNC_BATCH_SIZE, adminUid, adminPassword);
+            if (batch.isEmpty()) {
+                logger.debugf("Odoo sync: empty batch at offset=%d, ending pagination", offset);
+                break;
+            }
+            logger.debugf("Odoo sync: processing batch offset=%d size=%d", offset, batch.size());
+            for (OdooUserInfo info : batch) {
+                seenPartnerIds.add(info.getPartnerId());
+            }
+            try {
+                KeycloakModelUtils.runJobInTransaction(sessionFactory, session -> {
+                    RealmModel realm = session.realms().getRealm(realmId);
+                    session.getContext().setRealm(realm);
+                    for (OdooUserInfo info : batch) {
+                        upsertUser(session, realm, model, info, result);
+                    }
+                });
+            } catch (RuntimeException e) {
+                logger.errorf(e, "Odoo sync: batch upsert failed at offset=%d", offset);
+                throw e;
+            }
+            if (batch.size() < SYNC_BATCH_SIZE) {
+                break;
+            }
+            offset += SYNC_BATCH_SIZE;
+        }
+        logger.debugf("Odoo sync: fetched %d partners, beginning deactivation pass", seenPartnerIds.size());
+
+        KeycloakModelUtils.runJobInTransaction(sessionFactory, session -> {
+            RealmModel realm = session.realms().getRealm(realmId);
+            session.getContext().setRealm(realm);
+            List<UserModel> federated = session.users()
+                    .searchForUserStream(realm, Map.of(), null, null)
+                    .filter(u -> model.getId().equals(u.getFederationLink()))
+                    .toList();
+            for (UserModel user : federated) {
+                String pidStr = user.getFirstAttribute(OdooUserStorageProvider.ATTR_ODOO_PARTNER_ID);
+                Integer pid = parseIntOrNull(pidStr);
+                if (pid == null || !seenPartnerIds.contains(pid)) {
+                    if (user.isEnabled()) {
+                        user.setEnabled(false);
+                        user.setSingleAttribute(OdooUserStorageProvider.ATTR_ODOO_IS_MEMBER, "false");
+                        result.increaseUpdated();
+                        logger.infof("Disabled Keycloak user '%s' (partner_id=%s no longer a member)",
+                                user.getUsername(), pidStr);
+                    }
+                }
+            }
+        });
+
+        logger.infof("Odoo sync done: added=%d, updated=%d, failed=%d, elapsedMs=%d",
+                result.getAdded(), result.getUpdated(), result.getFailed(),
+                System.currentTimeMillis() - syncStart);
+        return result;
+    }
+
+    @Override
+    public SynchronizationResult syncSince(Date lastSync, KeycloakSessionFactory sessionFactory,
+                                            String realmId, UserStorageProviderModel model) {
+        return sync(sessionFactory, realmId, model);
+    }
+
+    private static void upsertUser(KeycloakSession session, RealmModel realm, ComponentModel model,
+                                    OdooUserInfo info, SynchronizationResult result) {
+        if (info.getBarcodeBase() == null || info.getBarcodeBase().isBlank()) {
+            logger.warnf("Sync: skipping partnerId=%d (email=%s) — missing barcode_base",
+                    info.getPartnerId(), info.getEmail());
+            result.increaseFailed();
+            return;
+        }
+        UserModel existing = OdooUserStorageProvider.findByPartnerId(session, realm, model, info.getPartnerId());
+
+        if (existing == null) {
+            UserModel created = session.users().addUser(realm, info.getBarcodeBase());
+            created.setFederationLink(model.getId());
+            OdooUserStorageProvider.applyAttributes(created, info);
+            result.increaseAdded();
+            logger.debugf("Sync: added partnerId=%d username=%s", info.getPartnerId(), info.getBarcodeBase());
+        } else {
+            if (!info.getBarcodeBase().equals(existing.getUsername())) {
+                existing.setUsername(info.getBarcodeBase());
+            }
+            OdooUserStorageProvider.applyAttributes(existing, info);
+            result.increaseUpdated();
+        }
+    }
+
+    private static Integer parseIntOrNull(String s) {
+        if (s == null) return null;
+        try {
+            return Integer.parseInt(s);
+        } catch (NumberFormatException e) {
+            return null;
         }
     }
 }
