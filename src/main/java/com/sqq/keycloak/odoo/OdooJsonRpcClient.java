@@ -5,8 +5,11 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -109,6 +112,75 @@ public class OdooJsonRpcClient {
         } catch (Exception e) {
             logger.errorf(e, "Odoo listMemberPartners failed (offset=%d, limit=%d)", offset, limit);
             return List.of();
+        }
+    }
+
+    public Map<Integer, List<String>> fetchRolesForUsers(List<Integer> uids, int adminUid, String adminPassword) {
+        if (uids == null || uids.isEmpty()) {
+            return Map.of();
+        }
+        try {
+            JsonNode usersResult = callJsonRpc("object", "execute_kw",
+                    List.of(odooDatabase, adminUid, adminPassword,
+                            "res.users", "read",
+                            List.of(uids),
+                            Map.of("fields", List.of("id", "groups_id"))));
+            if (usersResult == null || !usersResult.isArray()) {
+                return Map.of();
+            }
+
+            Map<Integer, List<Integer>> uidToGroupIds = new HashMap<>();
+            Set<Integer> allGroupIds = new HashSet<>();
+            for (JsonNode u : usersResult) {
+                int uid = u.get("id").intValue();
+                List<Integer> gids = new ArrayList<>();
+                JsonNode gidsNode = u.get("groups_id");
+                if (gidsNode != null && gidsNode.isArray()) {
+                    for (JsonNode g : gidsNode) {
+                        gids.add(g.intValue());
+                    }
+                }
+                uidToGroupIds.put(uid, gids);
+                allGroupIds.addAll(gids);
+            }
+            if (allGroupIds.isEmpty()) {
+                Map<Integer, List<String>> empty = new HashMap<>();
+                for (Integer uid : uidToGroupIds.keySet()) {
+                    empty.put(uid, List.of());
+                }
+                return empty;
+            }
+
+            JsonNode groupsResult = callJsonRpc("object", "execute_kw",
+                    List.of(odooDatabase, adminUid, adminPassword,
+                            "res.groups", "read",
+                            List.of(new ArrayList<>(allGroupIds)),
+                            Map.of("fields", List.of("id", "name"))));
+            Map<Integer, String> groupIdToName = new HashMap<>();
+            if (groupsResult != null && groupsResult.isArray()) {
+                for (JsonNode g : groupsResult) {
+                    String name = textOrNull(g, "name");
+                    if (name != null) {
+                        groupIdToName.put(g.get("id").intValue(), name);
+                    }
+                }
+            }
+
+            Map<Integer, List<String>> result = new HashMap<>();
+            for (Map.Entry<Integer, List<Integer>> entry : uidToGroupIds.entrySet()) {
+                List<String> names = new ArrayList<>();
+                for (Integer gid : entry.getValue()) {
+                    String name = groupIdToName.get(gid);
+                    if (name != null) {
+                        names.add(name);
+                    }
+                }
+                result.put(entry.getKey(), names);
+            }
+            return result;
+        } catch (Exception e) {
+            logger.errorf(e, "Odoo fetchRolesForUsers failed for uids=%s", uids);
+            return Map.of();
         }
     }
 

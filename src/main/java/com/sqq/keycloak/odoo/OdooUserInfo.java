@@ -1,5 +1,7 @@
 package com.sqq.keycloak.odoo;
 
+import java.util.List;
+
 public class OdooUserInfo {
 
     private final int uid;
@@ -8,6 +10,7 @@ public class OdooUserInfo {
     private final String email;
     private final String barcodeBase;
     private final boolean isMember;
+    private List<String> roles = List.of();
 
     public OdooUserInfo(int uid, int partnerId, String name, String email,
                         String barcodeBase, boolean isMember) {
@@ -41,5 +44,13 @@ public class OdooUserInfo {
 
     public boolean isMember() {
         return isMember;
+    }
+
+    public List<String> getRoles() {
+        return roles;
+    }
+
+    public void setRoles(List<String> roles) {
+        this.roles = roles == null ? List.of() : roles;
     }
 }

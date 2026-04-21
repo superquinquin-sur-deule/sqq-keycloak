@@ -1,5 +1,6 @@
 package com.sqq.keycloak.odoo;
 
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashSet;
 import java.util.List;
@@ -170,8 +171,16 @@ public class OdooUserStorageProviderFactory
                 break;
             }
             logger.debugf("Odoo sync: processing batch offset=%d size=%d", offset, batch.size());
+            List<Integer> batchUids = new ArrayList<>();
             for (OdooUserInfo info : batch) {
                 seenPartnerIds.add(info.getPartnerId());
+                if (info.getUid() > 0) {
+                    batchUids.add(info.getUid());
+                }
+            }
+            Map<Integer, List<String>> rolesByUid = client.fetchRolesForUsers(batchUids, adminUid, adminPassword);
+            for (OdooUserInfo info : batch) {
+                info.setRoles(rolesByUid.getOrDefault(info.getUid(), List.of()));
             }
             try {
                 KeycloakModelUtils.runJobInTransaction(sessionFactory, session -> {
@@ -239,14 +248,14 @@ public class OdooUserStorageProviderFactory
         if (existing == null) {
             UserModel created = session.users().addUser(realm, info.getBarcodeBase());
             created.setFederationLink(model.getId());
-            OdooUserStorageProvider.applyAttributes(created, info);
+            OdooUserStorageProvider.applyAttributes(realm, created, info);
             result.increaseAdded();
             logger.debugf("Sync: added partnerId=%d username=%s", info.getPartnerId(), info.getBarcodeBase());
         } else {
             if (!info.getBarcodeBase().equals(existing.getUsername())) {
                 existing.setUsername(info.getBarcodeBase());
             }
-            OdooUserStorageProvider.applyAttributes(existing, info);
+            OdooUserStorageProvider.applyAttributes(realm, existing, info);
             result.increaseUpdated();
         }
     }

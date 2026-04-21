@@ -1,6 +1,9 @@
 package com.sqq.keycloak.odoo;
 
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Stream;
 
 import org.keycloak.component.ComponentModel;
@@ -9,6 +12,7 @@ import org.keycloak.credential.CredentialInputValidator;
 import org.keycloak.models.GroupModel;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
+import org.keycloak.models.RoleModel;
 import org.keycloak.models.UserModel;
 import org.keycloak.models.credential.PasswordCredentialModel;
 import org.keycloak.storage.UserStorageProvider;
@@ -24,6 +28,28 @@ public class OdooUserStorageProvider implements UserStorageProvider, UserLookupP
     static final String ATTR_ODOO_UID = "odoo_uid";
     static final String ATTR_ODOO_PARTNER_ID = "odoo_partner_id";
     static final String ATTR_ODOO_IS_MEMBER = "odoo_is_member";
+
+    static final Set<String> MANAGED_ROLES = Set.of(
+            "Cashier",
+            "Purchaser",
+            "Purchase Manager",
+            "Inventory Manager",
+            "Teamleader",
+            "Member Manager",
+            "Accountant",
+            "Foodcoop Admin",
+            "Member",
+            "BDMLecture",
+            "BDMPresence",
+            "BDMSaisie",
+            "Subscription",
+            "Communications Officer",
+            "Communications Manager",
+            "Welcome meeting team",
+            "Member accountant",
+            "Point of Sales Manager",
+            "BadgeReader",
+            "Staff");
 
     private final KeycloakSession session;
     private final ComponentModel model;
@@ -133,6 +159,11 @@ public class OdooUserStorageProvider implements UserStorageProvider, UserLookupP
             logger.warnf("Skipping Odoo partner %d: missing barcode_base (email=%s)", info.getPartnerId(), info.getEmail());
             return null;
         }
+        if (info.getUid() > 0) {
+            Map<Integer, List<String>> rolesMap = odooClient.fetchRolesForUsers(
+                    List.of(info.getUid()), adminUid, adminPassword);
+            info.setRoles(rolesMap.getOrDefault(info.getUid(), List.of()));
+        }
         UserModel user = findByPartnerId(session, realm, model, info.getPartnerId());
         if (user == null) {
             logger.infof("Importing Odoo partner %d as user '%s'", info.getPartnerId(), info.getBarcodeBase());
@@ -145,7 +176,7 @@ public class OdooUserStorageProvider implements UserStorageProvider, UserLookupP
         } else {
             logger.debugf("Updating federated user (partnerId=%d, username=%s)", info.getPartnerId(), user.getUsername());
         }
-        applyAttributes(user, info);
+        applyAttributes(realm, user, info);
         return user;
     }
 
@@ -157,7 +188,7 @@ public class OdooUserStorageProvider implements UserStorageProvider, UserLookupP
                 .orElse(null);
     }
 
-    static void applyAttributes(UserModel user, OdooUserInfo info) {
+    static void applyAttributes(RealmModel realm, UserModel user, OdooUserInfo info) {
         user.setEnabled(info.isMember());
         if (info.getEmail() != null) {
             user.setEmail(info.getEmail());
@@ -180,5 +211,38 @@ public class OdooUserStorageProvider implements UserStorageProvider, UserLookupP
         user.setSingleAttribute(ATTR_ODOO_UID, String.valueOf(info.getUid()));
         user.setSingleAttribute(ATTR_ODOO_PARTNER_ID, String.valueOf(info.getPartnerId()));
         user.setSingleAttribute(ATTR_ODOO_IS_MEMBER, String.valueOf(info.isMember()));
+        applyRoles(realm, user, info.getRoles());
+    }
+
+    static void applyRoles(RealmModel realm, UserModel user, List<String> odooRoles) {
+        Set<String> desired = new HashSet<>();
+        if (odooRoles != null) {
+            for (String name : odooRoles) {
+                if (MANAGED_ROLES.contains(name)) {
+                    desired.add(name);
+                }
+            }
+        }
+
+        user.getRealmRoleMappingsStream()
+                .filter(role -> MANAGED_ROLES.contains(role.getName()))
+                .filter(role -> !desired.contains(role.getName()))
+                .toList()
+                .forEach(role -> {
+                    user.deleteRoleMapping(role);
+                    logger.debugf("Removed realm role '%s' from user '%s'", role.getName(), user.getUsername());
+                });
+
+        for (String roleName : desired) {
+            RoleModel role = realm.getRole(roleName);
+            if (role == null) {
+                role = realm.addRole(roleName);
+                logger.infof("Created realm role '%s'", roleName);
+            }
+            if (!user.hasRole(role)) {
+                user.grantRole(role);
+                logger.debugf("Granted realm role '%s' to user '%s'", roleName, user.getUsername());
+            }
+        }
     }
 }
