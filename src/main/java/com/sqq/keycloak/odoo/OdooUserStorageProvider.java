@@ -1,13 +1,7 @@
 package com.sqq.keycloak.odoo;
 
-import java.security.SecureRandom;
-import java.util.Base64;
 import java.util.Map;
 import java.util.stream.Stream;
-
-import javax.crypto.Cipher;
-import javax.crypto.spec.GCMParameterSpec;
-import javax.crypto.spec.SecretKeySpec;
 
 import org.keycloak.component.ComponentModel;
 import org.keycloak.credential.CredentialInput;
@@ -31,27 +25,19 @@ public class OdooUserStorageProvider implements UserStorageProvider, UserLookupP
     static final String ATTR_ODOO_PARTNER_ID = "odoo_partner_id";
     static final String ATTR_ODOO_IS_MEMBER = "odoo_is_member";
 
-    private static final int GCM_IV_LENGTH = 12;
-    private static final int GCM_TAG_LENGTH = 128;
-
     private final KeycloakSession session;
     private final ComponentModel model;
     private final OdooJsonRpcClient odooClient;
     private final int adminUid;
     private final String adminPassword;
-    private final boolean storePassword;
-    private final String encryptionKey;
 
     public OdooUserStorageProvider(KeycloakSession session, ComponentModel model,
-                                   OdooJsonRpcClient odooClient, int adminUid, String adminPassword,
-                                   boolean storePassword, String encryptionKey) {
+                                   OdooJsonRpcClient odooClient, int adminUid, String adminPassword) {
         this.session = session;
         this.model = model;
         this.odooClient = odooClient;
         this.adminUid = adminUid;
         this.adminPassword = adminPassword;
-        this.storePassword = storePassword;
-        this.encryptionKey = encryptionKey;
     }
 
     @Override
@@ -89,21 +75,6 @@ public class OdooUserStorageProvider implements UserStorageProvider, UserLookupP
         if (uid <= 0) {
             logger.debugf("Odoo authentication failed for user: %s (email=%s)", username, email);
             return false;
-        }
-
-        if (storePassword) {
-            try {
-                String encryptedPassword = encrypt(password, encryptionKey);
-                var authSession = session.getContext().getAuthenticationSession();
-                if (authSession != null) {
-                    authSession.setUserSessionNote("odoo_password", encryptedPassword);
-                    logger.debugf("Stored encrypted Odoo password as session note for user=%s", username);
-                } else {
-                    logger.warnf("No authentication session available to store Odoo password note for user=%s", username);
-                }
-            } catch (Exception e) {
-                logger.errorf(e, "Failed to encrypt Odoo password for user: %s", username);
-            }
         }
 
         logger.debugf("Odoo authentication succeeded for user: %s (uid=%d)", username, uid);
@@ -157,25 +128,6 @@ public class OdooUserStorageProvider implements UserStorageProvider, UserLookupP
     public void close() {
     }
 
-    private static String encrypt(String plaintext, String base64Key) throws Exception {
-        byte[] keyBytes = Base64.getDecoder().decode(base64Key);
-        SecretKeySpec secretKey = new SecretKeySpec(keyBytes, "AES");
-
-        byte[] iv = new byte[GCM_IV_LENGTH];
-        new SecureRandom().nextBytes(iv);
-
-        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
-        cipher.init(Cipher.ENCRYPT_MODE, secretKey, new GCMParameterSpec(GCM_TAG_LENGTH, iv));
-        byte[] ciphertext = cipher.doFinal(plaintext.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-
-        byte[] output = new byte[iv.length + ciphertext.length];
-        System.arraycopy(iv, 0, output, 0, iv.length);
-        System.arraycopy(ciphertext, 0, output, iv.length, ciphertext.length);
-
-        return Base64.getEncoder().encodeToString(output);
-    }
-
-    
     private UserModel importOrUpdate(RealmModel realm, OdooUserInfo info) {
         if (info.getBarcodeBase() == null || info.getBarcodeBase().isBlank()) {
             logger.warnf("Skipping Odoo partner %d: missing barcode_base (email=%s)", info.getPartnerId(), info.getEmail());

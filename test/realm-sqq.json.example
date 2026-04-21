@@ -31,8 +31,6 @@
           "odoo-database": ["odoo_database_name"],
           "admin-login": ["service-account@example.com"],
           "admin-password": ["CHANGE_ME"],
-          "store-password": ["false"],
-          "encryption-key": [""],
           "enabled": ["true"],
           "priority": ["0"],
           "fullSyncPeriod": ["3600"],
