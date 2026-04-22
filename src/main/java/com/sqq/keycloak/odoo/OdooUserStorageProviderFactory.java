@@ -6,7 +6,6 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 
 import org.keycloak.component.ComponentModel;
 import org.keycloak.component.ComponentValidationException;
@@ -36,8 +35,6 @@ public class OdooUserStorageProviderFactory
     public static final String CONFIG_ADMIN_PASSWORD = "admin-password";
 
     private static final int SYNC_BATCH_SIZE = 100;
-
-    private static final ConcurrentHashMap<String, Integer> ADMIN_UID_CACHE = new ConcurrentHashMap<>();
 
     private static final List<ProviderConfigProperty> CONFIG_PROPERTIES;
 
@@ -88,28 +85,22 @@ public class OdooUserStorageProviderFactory
 
         OdooJsonRpcClient client = new OdooJsonRpcClient(odooUrl, odooDatabase);
 
-        int adminUid = resolveAdminUid(model, client, adminLogin, adminPassword);
+        int adminUid = resolveAdminUid(client, adminLogin, adminPassword);
 
         return new OdooUserStorageProvider(session, model, client, adminUid, adminPassword);
     }
 
-    private static int resolveAdminUid(ComponentModel model, OdooJsonRpcClient client,
-                                       String adminLogin, String adminPassword) {
+    private static int resolveAdminUid(OdooJsonRpcClient client, String adminLogin, String adminPassword) {
         if (adminLogin == null || adminLogin.isBlank()
                 || adminPassword == null || adminPassword.isBlank()) {
             logger.warn("Odoo admin credentials not configured — user search will be unavailable");
             return -1;
-        }
-        Integer cached = ADMIN_UID_CACHE.get(model.getId());
-        if (cached != null) {
-            return cached;
         }
         int uid = client.authenticate(adminLogin, adminPassword);
         if (uid <= 0) {
             logger.warnf("Odoo admin authentication failed (login=%s)", adminLogin);
             return -1;
         }
-        ADMIN_UID_CACHE.putIfAbsent(model.getId(), uid);
         logger.debugf("Odoo admin authenticated: login=%s uid=%d", adminLogin, uid);
         return uid;
     }
@@ -117,16 +108,6 @@ public class OdooUserStorageProviderFactory
     @Override
     public List<ProviderConfigProperty> getConfigProperties() {
         return CONFIG_PROPERTIES;
-    }
-
-    @Override
-    public void onUpdate(KeycloakSession session, RealmModel realm, ComponentModel oldModel, ComponentModel newModel) {
-        ADMIN_UID_CACHE.remove(newModel.getId());
-    }
-
-    @Override
-    public void preRemove(KeycloakSession session, RealmModel realm, ComponentModel model) {
-        ADMIN_UID_CACHE.remove(model.getId());
     }
 
     @Override
@@ -155,7 +136,7 @@ public class OdooUserStorageProviderFactory
         String adminPassword = model.get(CONFIG_ADMIN_PASSWORD);
 
         OdooJsonRpcClient client = new OdooJsonRpcClient(odooUrl, odooDatabase);
-        int adminUid = resolveAdminUid(model, client, adminLogin, adminPassword);
+        int adminUid = resolveAdminUid(client, adminLogin, adminPassword);
         if (adminUid <= 0) {
             logger.error("Odoo sync aborted: admin not authenticated");
             return result;
@@ -164,25 +145,25 @@ public class OdooUserStorageProviderFactory
         Set<Integer> seenPartnerIds = new HashSet<>();
         int offset = 0;
 
-        while (true) {
-            List<OdooUserInfo> batch = client.listMemberPartners(offset, SYNC_BATCH_SIZE, adminUid, adminPassword);
-            if (batch.isEmpty()) {
-                logger.debugf("Odoo sync: empty batch at offset=%d, ending pagination", offset);
-                break;
-            }
-            logger.debugf("Odoo sync: processing batch offset=%d size=%d", offset, batch.size());
-            List<Integer> batchUids = new ArrayList<>();
-            for (OdooUserInfo info : batch) {
-                seenPartnerIds.add(info.getPartnerId());
-                if (info.getUid() > 0) {
-                    batchUids.add(info.getUid());
+        try {
+            while (true) {
+                List<OdooUserInfo> batch = client.listMemberPartners(offset, SYNC_BATCH_SIZE, adminUid, adminPassword);
+                if (batch.isEmpty()) {
+                    logger.debugf("Odoo sync: empty batch at offset=%d, ending pagination", offset);
+                    break;
                 }
-            }
-            Map<Integer, List<String>> rolesByUid = client.fetchRolesForUsers(batchUids, adminUid, adminPassword);
-            for (OdooUserInfo info : batch) {
-                info.setRoles(rolesByUid.getOrDefault(info.getUid(), List.of()));
-            }
-            try {
+                logger.debugf("Odoo sync: processing batch offset=%d size=%d", offset, batch.size());
+                List<Integer> batchUids = new ArrayList<>();
+                for (OdooUserInfo info : batch) {
+                    seenPartnerIds.add(info.getPartnerId());
+                    if (info.getUid() > 0) {
+                        batchUids.add(info.getUid());
+                    }
+                }
+                Map<Integer, List<String>> rolesByUid = client.fetchRolesForUsers(batchUids, adminUid, adminPassword);
+                for (OdooUserInfo info : batch) {
+                    info.setRoles(rolesByUid.getOrDefault(info.getUid(), List.of()));
+                }
                 KeycloakModelUtils.runJobInTransaction(sessionFactory, session -> {
                     RealmModel realm = session.realms().getRealm(realmId);
                     session.getContext().setRealm(realm);
@@ -190,14 +171,14 @@ public class OdooUserStorageProviderFactory
                         upsertUser(session, realm, model, info, result);
                     }
                 });
-            } catch (RuntimeException e) {
-                logger.errorf(e, "Odoo sync: batch upsert failed at offset=%d", offset);
-                throw e;
+                if (batch.size() < SYNC_BATCH_SIZE) {
+                    break;
+                }
+                offset += SYNC_BATCH_SIZE;
             }
-            if (batch.size() < SYNC_BATCH_SIZE) {
-                break;
-            }
-            offset += SYNC_BATCH_SIZE;
+        } catch (RuntimeException e) {
+            logger.errorf(e, "Odoo sync aborted: fetch/upsert failed at offset=%d — skipping deactivation pass", offset);
+            return result;
         }
         logger.debugf("Odoo sync: fetched %d partners, beginning deactivation pass", seenPartnerIds.size());
 
