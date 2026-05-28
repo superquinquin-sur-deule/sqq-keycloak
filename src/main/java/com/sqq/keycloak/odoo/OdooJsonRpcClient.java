@@ -5,6 +5,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -28,8 +29,8 @@ public class OdooJsonRpcClient {
     private static final ObjectMapper mapper = new ObjectMapper();
     private static final AtomicInteger requestId = new AtomicInteger(1);
 
-    private static final List<String> PARTNER_FIELDS = List.of(
-            "id", "name", "email", "barcode_base", "is_member", "user_ids");
+    private static final List<String> USER_FIELDS = List.of(
+            "id", "login", "name", "email", "groups_id");
 
     private static final HttpClient HTTP_CLIENT = HttpClient.newHttpClient();
 
@@ -63,51 +64,48 @@ public class OdooJsonRpcClient {
         }
     }
 
-    public OdooUserInfo searchPartnerByBarcode(String barcode, int adminUid, String adminPassword) {
-        return searchPartner(List.of("barcode_base", "=", barcode), adminUid, adminPassword);
+    public OdooUserInfo searchUserByEmail(String email, int adminUid, String adminPassword) {
+        return searchUser(List.of("email", "=", email), adminUid, adminPassword);
     }
 
-    public OdooUserInfo searchPartnerByEmail(String email, int adminUid, String adminPassword) {
-        return searchPartner(List.of("email", "=", email), adminUid, adminPassword);
+    public OdooUserInfo searchUserByLogin(String login, int adminUid, String adminPassword) {
+        return searchUser(List.of("login", "=", login), adminUid, adminPassword);
     }
 
-    private OdooUserInfo searchPartner(List<Object> extraCriterion, int adminUid, String adminPassword) {
+    private OdooUserInfo searchUser(List<Object> criterion, int adminUid, String adminPassword) {
         try {
-            List<Object> domain = List.of(extraCriterion, List.of("user_ids", "!=", false));
+            List<Object> domain = List.of(criterion);
             JsonNode result = callJsonRpc("object", "execute_kw",
                     List.of(odooDatabase, adminUid, adminPassword,
-                            "res.partner", "search_read",
+                            "res.users", "search_read",
                             List.of(domain),
-                            Map.of("fields", PARTNER_FIELDS, "limit", 1)));
+                            Map.of("fields", USER_FIELDS, "limit", 1)));
 
             if (result == null || !result.isArray() || result.isEmpty()) {
                 return null;
             }
             return mapToUserInfo(result.get(0));
         } catch (Exception e) {
-            logger.errorf(e, "Odoo searchPartner failed for criterion=%s", extraCriterion);
+            logger.errorf(e, "Odoo searchUser failed for criterion=%s", criterion);
             return null;
         }
     }
 
-    public List<OdooUserInfo> listMemberPartners(int offset, int limit, int adminUid, String adminPassword) {
-        List<Object> domain = List.of(
-                List.of("is_member", "=", true),
-                List.of("user_ids", "!=", false));
+    public List<OdooUserInfo> listUsers(int offset, int limit, int adminUid, String adminPassword) {
         JsonNode result;
         try {
             result = callJsonRpc("object", "execute_kw",
                     List.of(odooDatabase, adminUid, adminPassword,
-                            "res.partner", "search_read",
-                            List.of(domain),
-                            Map.of("fields", PARTNER_FIELDS,
+                            "res.users", "search_read",
+                            List.of(Collections.emptyList()),
+                            Map.of("fields", USER_FIELDS,
                                     "offset", offset,
                                     "limit", limit,
                                     "order", "id asc")));
         } catch (OdooRpcException e) {
             throw e;
         } catch (Exception e) {
-            throw new OdooRpcException("listMemberPartners failed: " + e.getMessage());
+            throw new OdooRpcException("listUsers failed: " + e.getMessage());
         }
 
         List<OdooUserInfo> results = new ArrayList<>();
@@ -119,50 +117,19 @@ public class OdooJsonRpcClient {
                 }
             }
         }
-        logger.debugf("Odoo listMemberPartners: offset=%d returned=%d", offset, results.size());
+        logger.debugf("Odoo listUsers: offset=%d returned=%d", offset, results.size());
         return results;
     }
 
-    public Map<Integer, List<String>> fetchRolesForUsers(List<Integer> uids, int adminUid, String adminPassword) {
-        if (uids == null || uids.isEmpty()) {
+    public Map<Integer, String> resolveGroupNames(Set<Integer> groupIds, int adminUid, String adminPassword) {
+        if (groupIds == null || groupIds.isEmpty()) {
             return Map.of();
         }
         try {
-            JsonNode usersResult = callJsonRpc("object", "execute_kw",
-                    List.of(odooDatabase, adminUid, adminPassword,
-                            "res.users", "read",
-                            List.of(uids),
-                            Map.of("fields", List.of("id", "groups_id"))));
-            if (usersResult == null || !usersResult.isArray()) {
-                return Map.of();
-            }
-
-            Map<Integer, List<Integer>> uidToGroupIds = new HashMap<>();
-            Set<Integer> allGroupIds = new HashSet<>();
-            for (JsonNode u : usersResult) {
-                int uid = u.get("id").intValue();
-                List<Integer> gids = new ArrayList<>();
-                JsonNode gidsNode = u.get("groups_id");
-                if (gidsNode != null && gidsNode.isArray()) {
-                    for (JsonNode g : gidsNode) {
-                        gids.add(g.intValue());
-                    }
-                }
-                uidToGroupIds.put(uid, gids);
-                allGroupIds.addAll(gids);
-            }
-            if (allGroupIds.isEmpty()) {
-                Map<Integer, List<String>> empty = new HashMap<>();
-                for (Integer uid : uidToGroupIds.keySet()) {
-                    empty.put(uid, List.of());
-                }
-                return empty;
-            }
-
             JsonNode groupsResult = callJsonRpc("object", "execute_kw",
                     List.of(odooDatabase, adminUid, adminPassword,
                             "res.groups", "read",
-                            List.of(new ArrayList<>(allGroupIds)),
+                            List.of(new ArrayList<>(groupIds)),
                             Map.of("fields", List.of("id", "name"))));
             Map<Integer, String> groupIdToName = new HashMap<>();
             if (groupsResult != null && groupsResult.isArray()) {
@@ -173,23 +140,26 @@ public class OdooJsonRpcClient {
                     }
                 }
             }
-
-            Map<Integer, List<String>> result = new HashMap<>();
-            for (Map.Entry<Integer, List<Integer>> entry : uidToGroupIds.entrySet()) {
-                List<String> names = new ArrayList<>();
-                for (Integer gid : entry.getValue()) {
-                    String name = groupIdToName.get(gid);
-                    if (name != null) {
-                        names.add(name);
-                    }
-                }
-                result.put(entry.getKey(), names);
-            }
-            return result;
+            return groupIdToName;
         } catch (Exception e) {
-            logger.errorf(e, "Odoo fetchRolesForUsers failed for uids=%s", uids);
+            logger.errorf(e, "Odoo resolveGroupNames failed for groupIds=%s", groupIds);
             return Map.of();
         }
+    }
+
+    public List<String> resolveRolesFor(OdooUserInfo info, int adminUid, String adminPassword) {
+        if (info == null || info.getGroupIds().isEmpty()) {
+            return List.of();
+        }
+        Map<Integer, String> names = resolveGroupNames(new HashSet<>(info.getGroupIds()), adminUid, adminPassword);
+        List<String> roles = new ArrayList<>();
+        for (Integer gid : info.getGroupIds()) {
+            String name = names.get(gid);
+            if (name != null) {
+                roles.add(name);
+            }
+        }
+        return roles;
     }
 
     private JsonNode callJsonRpc(String service, String method, List<Object> args) throws Exception {
@@ -251,19 +221,20 @@ public class OdooJsonRpcClient {
     }
 
     private OdooUserInfo mapToUserInfo(JsonNode record) {
-        int partnerId = record.get("id").intValue();
+        int uid = record.get("id").intValue();
+        String login = textOrNull(record, "login");
         String name = textOrNull(record, "name");
         String email = textOrNull(record, "email");
-        String barcodeBase = textOrNull(record, "barcode_base");
-        boolean isMember = record.has("is_member") && record.get("is_member").asBoolean(false);
 
-        int uid = 0;
-        JsonNode userIds = record.get("user_ids");
-        if (userIds != null && userIds.isArray() && !userIds.isEmpty()) {
-            uid = userIds.get(0).intValue();
+        List<Integer> groupIds = new ArrayList<>();
+        JsonNode gidsNode = record.get("groups_id");
+        if (gidsNode != null && gidsNode.isArray()) {
+            for (JsonNode g : gidsNode) {
+                groupIds.add(g.intValue());
+            }
         }
 
-        return new OdooUserInfo(uid, partnerId, name, email, barcodeBase, isMember);
+        return new OdooUserInfo(uid, login, name, email, groupIds);
     }
 
     private String textOrNull(JsonNode node, String field) {

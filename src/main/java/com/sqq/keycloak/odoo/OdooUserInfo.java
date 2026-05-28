@@ -5,29 +5,26 @@ import java.util.List;
 public class OdooUserInfo {
 
     private final int uid;
-    private final int partnerId;
+    private final String login;
     private final String name;
     private final String email;
-    private final String barcodeBase;
-    private final boolean isMember;
+    private final List<Integer> groupIds;
     private List<String> roles = List.of();
 
-    public OdooUserInfo(int uid, int partnerId, String name, String email,
-                        String barcodeBase, boolean isMember) {
+    public OdooUserInfo(int uid, String login, String name, String email, List<Integer> groupIds) {
         this.uid = uid;
-        this.partnerId = partnerId;
+        this.login = login;
         this.name = name;
         this.email = email;
-        this.barcodeBase = barcodeBase;
-        this.isMember = isMember;
+        this.groupIds = groupIds == null ? List.of() : groupIds;
     }
 
     public int getUid() {
         return uid;
     }
 
-    public int getPartnerId() {
-        return partnerId;
+    public String getLogin() {
+        return login;
     }
 
     public String getName() {
@@ -38,12 +35,8 @@ public class OdooUserInfo {
         return email;
     }
 
-    public String getBarcodeBase() {
-        return barcodeBase;
-    }
-
-    public boolean isMember() {
-        return isMember;
+    public List<Integer> getGroupIds() {
+        return groupIds;
     }
 
     public List<String> getRoles() {

@@ -142,27 +142,32 @@ public class OdooUserStorageProviderFactory
             return result;
         }
 
-        Set<Integer> seenPartnerIds = new HashSet<>();
+        Set<Integer> seenUids = new HashSet<>();
         int offset = 0;
 
         try {
             while (true) {
-                List<OdooUserInfo> batch = client.listMemberPartners(offset, SYNC_BATCH_SIZE, adminUid, adminPassword);
+                List<OdooUserInfo> batch = client.listUsers(offset, SYNC_BATCH_SIZE, adminUid, adminPassword);
                 if (batch.isEmpty()) {
                     logger.debugf("Odoo sync: empty batch at offset=%d, ending pagination", offset);
                     break;
                 }
                 logger.debugf("Odoo sync: processing batch offset=%d size=%d", offset, batch.size());
-                List<Integer> batchUids = new ArrayList<>();
+                Set<Integer> batchGroupIds = new HashSet<>();
                 for (OdooUserInfo info : batch) {
-                    seenPartnerIds.add(info.getPartnerId());
-                    if (info.getUid() > 0) {
-                        batchUids.add(info.getUid());
-                    }
+                    seenUids.add(info.getUid());
+                    batchGroupIds.addAll(info.getGroupIds());
                 }
-                Map<Integer, List<String>> rolesByUid = client.fetchRolesForUsers(batchUids, adminUid, adminPassword);
+                Map<Integer, String> groupNames = client.resolveGroupNames(batchGroupIds, adminUid, adminPassword);
                 for (OdooUserInfo info : batch) {
-                    info.setRoles(rolesByUid.getOrDefault(info.getUid(), List.of()));
+                    List<String> roles = new ArrayList<>();
+                    for (Integer gid : info.getGroupIds()) {
+                        String name = groupNames.get(gid);
+                        if (name != null) {
+                            roles.add(name);
+                        }
+                    }
+                    info.setRoles(roles);
                 }
                 KeycloakModelUtils.runJobInTransaction(sessionFactory, session -> {
                     RealmModel realm = session.realms().getRealm(realmId);
@@ -180,7 +185,7 @@ public class OdooUserStorageProviderFactory
             logger.errorf(e, "Odoo sync aborted: fetch/upsert failed at offset=%d — skipping deactivation pass", offset);
             return result;
         }
-        logger.debugf("Odoo sync: fetched %d partners, beginning deactivation pass", seenPartnerIds.size());
+        logger.debugf("Odoo sync: fetched %d users, beginning deactivation pass", seenUids.size());
 
         KeycloakModelUtils.runJobInTransaction(sessionFactory, session -> {
             RealmModel realm = session.realms().getRealm(realmId);
@@ -190,15 +195,14 @@ public class OdooUserStorageProviderFactory
                     .filter(u -> model.getId().equals(u.getFederationLink()))
                     .toList();
             for (UserModel user : federated) {
-                String pidStr = user.getFirstAttribute(OdooUserStorageProvider.ATTR_ODOO_PARTNER_ID);
-                Integer pid = parseIntOrNull(pidStr);
-                if (pid == null || !seenPartnerIds.contains(pid)) {
+                String uidStr = user.getFirstAttribute(OdooUserStorageProvider.ATTR_ODOO_UID);
+                Integer uid = parseIntOrNull(uidStr);
+                if (uid == null || !seenUids.contains(uid)) {
                     if (user.isEnabled()) {
                         user.setEnabled(false);
-                        user.setSingleAttribute(OdooUserStorageProvider.ATTR_ODOO_IS_MEMBER, "false");
                         result.increaseUpdated();
-                        logger.infof("Disabled Keycloak user '%s' (partner_id=%s no longer a member)",
-                                user.getUsername(), pidStr);
+                        logger.infof("Disabled Keycloak user '%s' (odoo_uid=%s no longer present)",
+                                user.getUsername(), uidStr);
                     }
                 }
             }
@@ -218,23 +222,23 @@ public class OdooUserStorageProviderFactory
 
     private static void upsertUser(KeycloakSession session, RealmModel realm, ComponentModel model,
                                     OdooUserInfo info, SynchronizationResult result) {
-        if (info.getBarcodeBase() == null || info.getBarcodeBase().isBlank()) {
-            logger.warnf("Sync: skipping partnerId=%d (email=%s) — missing barcode_base",
-                    info.getPartnerId(), info.getEmail());
+        if (info.getEmail() == null || info.getEmail().isBlank()) {
+            logger.warnf("Sync: skipping uid=%d (login=%s) — missing email",
+                    info.getUid(), info.getLogin());
             result.increaseFailed();
             return;
         }
-        UserModel existing = OdooUserStorageProvider.findByPartnerId(session, realm, model, info.getPartnerId());
+        UserModel existing = OdooUserStorageProvider.findByOdooUid(session, realm, model, info.getUid());
 
         if (existing == null) {
-            UserModel created = session.users().addUser(realm, info.getBarcodeBase());
+            UserModel created = session.users().addUser(realm, info.getEmail());
             created.setFederationLink(model.getId());
             OdooUserStorageProvider.applyAttributes(realm, created, info);
             result.increaseAdded();
-            logger.debugf("Sync: added partnerId=%d username=%s", info.getPartnerId(), info.getBarcodeBase());
+            logger.debugf("Sync: added uid=%d username=%s", info.getUid(), info.getEmail());
         } else {
-            if (!info.getBarcodeBase().equals(existing.getUsername())) {
-                existing.setUsername(info.getBarcodeBase());
+            if (!info.getEmail().equals(existing.getUsername())) {
+                existing.setUsername(info.getEmail());
             }
             OdooUserStorageProvider.applyAttributes(realm, existing, info);
             result.increaseUpdated();

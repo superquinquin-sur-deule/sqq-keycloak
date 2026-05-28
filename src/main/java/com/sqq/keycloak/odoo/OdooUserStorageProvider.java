@@ -1,9 +1,11 @@
 package com.sqq.keycloak.odoo;
 
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.stream.Stream;
 
 import org.keycloak.component.ComponentModel;
@@ -26,30 +28,7 @@ public class OdooUserStorageProvider implements UserStorageProvider, UserLookupP
     private static final Logger logger = Logger.getLogger(OdooUserStorageProvider.class);
 
     static final String ATTR_ODOO_UID = "odoo_uid";
-    static final String ATTR_ODOO_PARTNER_ID = "odoo_partner_id";
-    static final String ATTR_ODOO_IS_MEMBER = "odoo_is_member";
-
-    static final Set<String> MANAGED_ROLES = Set.of(
-            "Cashier",
-            "Purchaser",
-            "Purchase Manager",
-            "Inventory Manager",
-            "Teamleader",
-            "Member Manager",
-            "Accountant",
-            "Foodcoop Admin",
-            "Member",
-            "BDMLecture",
-            "BDMPresence",
-            "BDMSaisie",
-            "Subscription",
-            "Communications Officer",
-            "Communications Manager",
-            "Welcome meeting team",
-            "Member accountant",
-            "Point of Sales Manager",
-            "BadgeReader",
-            "Staff");
+    static final String ATTR_ODOO_ROLES = "odoo_roles";
 
     private final KeycloakSession session;
     private final ComponentModel model;
@@ -112,7 +91,7 @@ public class OdooUserStorageProvider implements UserStorageProvider, UserLookupP
         if (adminUid <= 0) {
             return null;
         }
-        OdooUserInfo info = odooClient.searchPartnerByBarcode(username, adminUid, adminPassword);
+        OdooUserInfo info = odooClient.searchUserByEmail(username, adminUid, adminPassword);
         return info == null ? null : importOrUpdate(realm, info);
     }
 
@@ -121,7 +100,7 @@ public class OdooUserStorageProvider implements UserStorageProvider, UserLookupP
         if (adminUid <= 0) {
             return null;
         }
-        OdooUserInfo info = odooClient.searchPartnerByEmail(email, adminUid, adminPassword);
+        OdooUserInfo info = odooClient.searchUserByEmail(email, adminUid, adminPassword);
         return info == null ? null : importOrUpdate(realm, info);
     }
 
@@ -155,41 +134,37 @@ public class OdooUserStorageProvider implements UserStorageProvider, UserLookupP
     }
 
     private UserModel importOrUpdate(RealmModel realm, OdooUserInfo info) {
-        if (info.getBarcodeBase() == null || info.getBarcodeBase().isBlank()) {
-            logger.warnf("Skipping Odoo partner %d: missing barcode_base (email=%s)", info.getPartnerId(), info.getEmail());
+        if (info.getEmail() == null || info.getEmail().isBlank()) {
+            logger.warnf("Skipping Odoo user %d: missing email (login=%s)", info.getUid(), info.getLogin());
             return null;
         }
-        if (info.getUid() > 0) {
-            Map<Integer, List<String>> rolesMap = odooClient.fetchRolesForUsers(
-                    List.of(info.getUid()), adminUid, adminPassword);
-            info.setRoles(rolesMap.getOrDefault(info.getUid(), List.of()));
-        }
-        UserModel user = findByPartnerId(session, realm, model, info.getPartnerId());
+        info.setRoles(odooClient.resolveRolesFor(info, adminUid, adminPassword));
+        UserModel user = findByOdooUid(session, realm, model, info.getUid());
         if (user == null) {
-            logger.infof("Importing Odoo partner %d as user '%s'", info.getPartnerId(), info.getBarcodeBase());
-            user = session.users().addUser(realm, info.getBarcodeBase());
+            logger.infof("Importing Odoo user %d as '%s'", info.getUid(), info.getEmail());
+            user = session.users().addUser(realm, info.getEmail());
             user.setFederationLink(model.getId());
-        } else if (!info.getBarcodeBase().equals(user.getUsername())) {
-            logger.infof("Renaming federated user (partnerId=%d): '%s' -> '%s'",
-                    info.getPartnerId(), user.getUsername(), info.getBarcodeBase());
-            user.setUsername(info.getBarcodeBase());
+        } else if (!info.getEmail().equals(user.getUsername())) {
+            logger.infof("Renaming federated user (uid=%d): '%s' -> '%s'",
+                    info.getUid(), user.getUsername(), info.getEmail());
+            user.setUsername(info.getEmail());
         } else {
-            logger.debugf("Updating federated user (partnerId=%d, username=%s)", info.getPartnerId(), user.getUsername());
+            logger.debugf("Updating federated user (uid=%d, username=%s)", info.getUid(), user.getUsername());
         }
         applyAttributes(realm, user, info);
         return user;
     }
 
-    static UserModel findByPartnerId(KeycloakSession session, RealmModel realm, ComponentModel model, int partnerId) {
+    static UserModel findByOdooUid(KeycloakSession session, RealmModel realm, ComponentModel model, int uid) {
         return session.users()
-                .searchForUserByUserAttributeStream(realm, ATTR_ODOO_PARTNER_ID, String.valueOf(partnerId))
+                .searchForUserByUserAttributeStream(realm, ATTR_ODOO_UID, String.valueOf(uid))
                 .filter(u -> model.getId().equals(u.getFederationLink()))
                 .findFirst()
                 .orElse(null);
     }
 
     static void applyAttributes(RealmModel realm, UserModel user, OdooUserInfo info) {
-        user.setEnabled(info.isMember());
+        user.setEnabled(true);
         if (info.getEmail() != null) {
             user.setEmail(info.getEmail());
             user.setEmailVerified(true);
@@ -209,29 +184,31 @@ public class OdooUserStorageProvider implements UserStorageProvider, UserLookupP
             }
         }
         user.setSingleAttribute(ATTR_ODOO_UID, String.valueOf(info.getUid()));
-        user.setSingleAttribute(ATTR_ODOO_PARTNER_ID, String.valueOf(info.getPartnerId()));
-        user.setSingleAttribute(ATTR_ODOO_IS_MEMBER, String.valueOf(info.isMember()));
         applyRoles(realm, user, info.getRoles());
     }
 
     static void applyRoles(RealmModel realm, UserModel user, List<String> odooRoles) {
-        Set<String> desired = new HashSet<>();
+        Set<String> desired = new TreeSet<>();
         if (odooRoles != null) {
             for (String name : odooRoles) {
-                if (MANAGED_ROLES.contains(name)) {
+                if (name != null && !name.isBlank()) {
                     desired.add(name);
                 }
             }
         }
 
-        user.getRealmRoleMappingsStream()
-                .filter(role -> MANAGED_ROLES.contains(role.getName()))
-                .filter(role -> !desired.contains(role.getName()))
-                .toList()
-                .forEach(role -> {
-                    user.deleteRoleMapping(role);
-                    logger.debugf("Removed realm role '%s' from user '%s'", role.getName(), user.getUsername());
-                });
+        Set<String> previous = parsePreviousRoles(user.getFirstAttribute(ATTR_ODOO_ROLES));
+
+        for (String roleName : previous) {
+            if (desired.contains(roleName)) {
+                continue;
+            }
+            RoleModel role = realm.getRole(roleName);
+            if (role != null && user.hasRole(role)) {
+                user.deleteRoleMapping(role);
+                logger.debugf("Removed realm role '%s' from user '%s'", roleName, user.getUsername());
+            }
+        }
 
         for (String roleName : desired) {
             RoleModel role = realm.getRole(roleName);
@@ -244,5 +221,21 @@ public class OdooUserStorageProvider implements UserStorageProvider, UserLookupP
                 logger.debugf("Granted realm role '%s' to user '%s'", roleName, user.getUsername());
             }
         }
+
+        user.setSingleAttribute(ATTR_ODOO_ROLES, String.join(",", desired));
+    }
+
+    private static Set<String> parsePreviousRoles(String csv) {
+        if (csv == null || csv.isBlank()) {
+            return Set.of();
+        }
+        Set<String> result = new HashSet<>();
+        for (String token : Arrays.asList(csv.split(","))) {
+            String trimmed = token.strip();
+            if (!trimmed.isEmpty()) {
+                result.add(trimmed);
+            }
+        }
+        return result;
     }
 }

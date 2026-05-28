@@ -31,35 +31,39 @@ attempted.
 The first time a user authenticates, Keycloak imports them; on subsequent logins the local record is refreshed from
 Odoo. The following fields are synchronized:
 
-- **Username** — taken from Odoo's `barcode_base` (users without a barcode are skipped)
+- **Username** — taken from Odoo's `res.users.email` (users without an email are skipped)
 - **Email** — marked as verified automatically
-- **First / last name** — parsed from the Odoo partner name (supports both `Last, First` and space-separated forms)
-- **Enabled flag** — mirrors Odoo's `is_member` (non-members are disabled, not deleted)
-- **Custom attributes** — `odoo_uid`, `odoo_partner_id`, `odoo_is_member`
+- **First / last name** — parsed from the Odoo user name (supports both `Last, First` and space-separated forms)
+- **Enabled flag** — always `true` for synced users; only the post-sync deactivation pass disables users that have
+  disappeared from Odoo
+- **Custom attributes** — `odoo_uid` (the `res.users.id`, used as the federation key) and `odoo_roles` (CSV snapshot
+  of the roles granted by the last sync, used to revoke obsolete role mappings)
 - **Federation link** — set to this component so Keycloak knows the record is owned by the provider
 
 ### Role synchronization
 
-Odoo groups are mapped one-to-one onto Keycloak realm roles by name. Only a fixed whitelist of roles is managed by the
-provider; every other Keycloak role is left untouched.
+Every Odoo group attached to a user is mapped one-to-one onto a Keycloak realm role with the same name. There is no
+hard-coded whitelist: the provider creates the realm role on demand if it doesn't exist yet.
 
-Managed roles:
+To revoke without touching unrelated roles, the set of roles granted by the previous sync is stored on the user as the
+`odoo_roles` attribute. On each sync the provider:
 
-> Cashier, Purchaser, Purchase Manager, Inventory Manager, Teamleader, Member Manager, Accountant, Foodcoop Admin,
-> Member, BDMLecture, BDMPresence, BDMSaisie, Subscription, Communications Officer, Communications Manager, Welcome
-> meeting team, Member accountant, Point of Sales Manager, BadgeReader, Staff
+1. Computes `desired` = current Odoo group names for that user.
+2. For each role in `previous - desired`, revokes the role mapping (only if it actually exists on the user).
+3. For each role in `desired`, creates the realm role if missing and grants it.
+4. Overwrites `odoo_roles` with the new set.
 
-For each synced user, the provider fetches `res.users.groups_id`, resolves group names via `res.groups`, grants any
-missing managed role (creating the realm role if needed), and removes any managed role the user no longer has in Odoo.
+Realm roles granted manually in Keycloak — or technical roles such as `default-roles-*` and `offline_access` — are
+never touched as long as they were not previously granted by this provider.
 
 ### Periodic full sync
 
 When the provider is scheduled from the admin console, the sync job:
 
-1. Paginates through all `res.partner` records with `is_member = true` in batches of 100
-2. Fetches roles for the batch in a single call
+1. Paginates through all `res.users` records (Odoo excludes archived users by default) in batches of 100
+2. Collects the union of `groups_id` across the batch and resolves names with a single `res.groups.read` call
 3. Upserts each user and applies role sync
-4. After a successful pass, disables any local user whose Odoo partner is no longer a member
+4. After a successful pass, disables any local user whose `odoo_uid` is no longer present
 
 If the fetch or upsert phase fails, the deactivation pass is skipped to avoid cascading disables from a partial view of
 Odoo. Added / updated / failed counts and elapsed time are logged at the end of each run.
@@ -69,9 +73,9 @@ not tracked separately).
 
 ### User lookup
 
-`getUserByUsername` and `getUserByEmail` search Odoo for a partner that has a linked `res.users` record, matching on
-`barcode_base` and `email` respectively. `getUserById` returns `null` — users are always resolved through the federated
-storage layer. All lookups require admin credentials (see below).
+`getUserByUsername` and `getUserByEmail` both search `res.users` by `email`, since the Keycloak username is the user's
+email. `getUserById` returns `null` — users are always resolved through the federated storage layer. All lookups require
+admin credentials (see below).
 
 ### Configuration
 
