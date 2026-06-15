@@ -165,9 +165,9 @@ public class OdooUserStorageProvider implements UserStorageProvider, UserLookupP
 
     static void applyAttributes(RealmModel realm, UserModel user, OdooUserInfo info) {
         user.setEnabled(true);
+        user.setEmailVerified(true);
         if (info.getEmail() != null) {
             user.setEmail(info.getEmail());
-            user.setEmailVerified(true);
         }
         if (info.getName() != null) {
             String name = info.getName().strip();
