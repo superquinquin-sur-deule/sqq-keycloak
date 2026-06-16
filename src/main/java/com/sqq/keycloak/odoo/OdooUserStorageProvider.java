@@ -1,5 +1,6 @@
 package com.sqq.keycloak.odoo;
 
+import java.text.Normalizer;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
@@ -28,6 +29,9 @@ public class OdooUserStorageProvider implements UserStorageProvider, UserLookupP
     private static final Logger logger = Logger.getLogger(OdooUserStorageProvider.class);
 
     static final String ATTR_ODOO_UID = "odoo_uid";
+    // Concatenated firstName+lastName handle (lowercase, ASCII, no spaces), exposed
+    // as a claim so RocketChat can use it as the username instead of the email.
+    static final String ATTR_PRENOMNOM = "prenomnom";
     static final String ATTR_ODOO_ROLES = "odoo_roles";
 
     private final KeycloakSession session;
@@ -169,22 +173,44 @@ public class OdooUserStorageProvider implements UserStorageProvider, UserLookupP
         if (info.getEmail() != null) {
             user.setEmail(info.getEmail());
         }
+        String firstName = null;
+        String lastName = null;
         if (info.getName() != null) {
             String name = info.getName().strip();
             if (name.contains(",")) {
                 String[] parts = name.split(",", 2);
-                user.setLastName(parts[0].strip());
-                user.setFirstName(parts[1].strip());
+                lastName = parts[0].strip();
+                firstName = parts[1].strip();
             } else {
                 String[] parts = name.split("\\s+", 2);
-                user.setFirstName(parts[0]);
+                firstName = parts[0];
                 if (parts.length > 1) {
-                    user.setLastName(parts[1]);
+                    lastName = parts[1];
                 }
             }
+            user.setFirstName(firstName);
+            if (lastName != null) {
+                user.setLastName(lastName);
+            }
+        }
+        String handle = toHandle(firstName, lastName);
+        if (!handle.isEmpty()) {
+            user.setSingleAttribute(ATTR_PRENOMNOM, handle);
         }
         user.setSingleAttribute(ATTR_ODOO_UID, String.valueOf(info.getUid()));
         applyRoles(realm, user, info.getRoles());
+    }
+
+    /**
+     * Builds a username handle from first + last name: accents folded to ASCII,
+     * lowercased, and stripped of everything but [a-z0-9].
+     * e.g. ("Hélène", "Dupont") -> "helenedupont".
+     */
+    static String toHandle(String firstName, String lastName) {
+        String combined = (firstName == null ? "" : firstName) + (lastName == null ? "" : lastName);
+        String ascii = Normalizer.normalize(combined, Normalizer.Form.NFD)
+                .replaceAll("\\p{M}+", "");
+        return ascii.toLowerCase().replaceAll("[^a-z0-9]", "");
     }
 
     static void applyRoles(RealmModel realm, UserModel user, List<String> odooRoles) {
